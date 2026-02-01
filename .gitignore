@@ -3,6 +3,4 @@
 .kaggle/
 
 # Dataset folders (ignored because they're large)
-data/fifa23/
-# StatsBomb open-data
-data/statsbom-opendata/
+data/
