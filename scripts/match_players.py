@@ -101,15 +101,16 @@ def build_fifa_lookup():
     df['name_candidates'] = df.get('short_name', '').fillna('') + ' || ' + df.get('long_name', '').fillna('')
     # use list comprehension for faster normalized mapping
     df['normalized'] = [normalize_name(x) for x in df['name_candidates'].fillna('')]
-    # We'll store mapping of normalized name -> sofifa_id and original name
+    # We'll store mapping of normalized name -> fifa_id and original name
     if 'sofifa_id' in df.columns:
         lookup = df[['sofifa_id','short_name','long_name']].copy()
+        lookup = lookup.rename(columns={'sofifa_id': 'fifa_id'})
     else:
         lookup = df[['short_name','long_name']].copy()
-        lookup['sofifa_id'] = lookup.index.astype(str)
+        lookup['fifa_id'] = lookup.index.astype(str)
     lookup['normalized'] = df['normalized']
     # build normalized -> row mapping for fast exact lookup
-    norm_map = {row['normalized']: (row.get('sofifa_id'), row.get('short_name')) for _, row in lookup.iterrows()}
+    norm_map = {row['normalized']: (row.get('fifa_id'), row.get('short_name')) for _, row in lookup.iterrows()}
     return df, lookup, norm_map
 
 
@@ -162,16 +163,26 @@ def main():
     # Build a fast normalized map only for StatsBomb player names (avoid scanning full FIFA unnecessarily)
     sb_norms = set(unique_players['player_name_sb'].apply(normalize_name).tolist())
     fifa_norm_map = {}
+    # debug: confirm fifa parquet existence
+    print('Checking FIFA_PARQ:', FIFA_PARQ, 'exists=', FIFA_PARQ.exists())
     # try to load fifa CSV (fallback if parquet not available); use chunked read to avoid heavy memory/CPU
     if FIFA_PARQ.exists():
         fifa_df_full = pd.read_parquet(FIFA_PARQ)
         name_candidates = (fifa_df_full.get('short_name', '').fillna('') + ' || ' + fifa_df_full.get('long_name', '').fillna('')).astype(str).tolist()
         norms = [normalize_name(x) for x in name_candidates]
+        # build a lookup aligned with norms for later fuzzy selection
+        fifa_norms = norms
+        # build lookup with a stable 'fifa_id' column (use sofifa_id if present, else row index)
+        if 'sofifa_id' in fifa_df_full.columns:
+            fifa_lookup = fifa_df_full[['sofifa_id', 'short_name']].copy().rename(columns={'sofifa_id': 'fifa_id'})
+        else:
+            fifa_lookup = fifa_df_full[['short_name']].copy()
+            fifa_lookup['fifa_id'] = fifa_lookup.index.astype(str)
         for i, norm in enumerate(norms):
             if norm in sb_norms and norm not in fifa_norm_map:
                 row = fifa_df_full.iloc[i]
-                sofifa_id = row.get('sofifa_id') if 'sofifa_id' in row.index else str(i)
-                fifa_norm_map[norm] = (sofifa_id, row.get('short_name'))
+                fid = row.get('sofifa_id') if 'sofifa_id' in row.index else str(i)
+                fifa_norm_map[norm] = (fid, row.get('short_name'))
     else:
         csvp = FIFA_PARQ.with_suffix('.csv')
         if not csvp.exists():
@@ -185,27 +196,28 @@ def main():
         if chunk is not None:
             name_candidates = (chunk.get('short_name', '').fillna('') + ' || ' + chunk.get('long_name', '').fillna('')).astype(str).tolist()
             norms = [normalize_name(x) for x in name_candidates]
+            # build local fifa arrays for fuzzy scanning
+            fifa_norms = norms
+            # build local lookup for chunk with stable 'fifa_id'
+            if 'sofifa_id' in chunk.columns:
+                fifa_lookup = chunk[['sofifa_id', 'short_name']].copy().rename(columns={'sofifa_id': 'fifa_id'})
+            else:
+                fifa_lookup = chunk[['short_name']].copy()
+                fifa_lookup['fifa_id'] = fifa_lookup.index.astype(str)
             for i, norm in enumerate(norms):
                 if norm in sb_norms and norm not in fifa_norm_map:
                     row = chunk.iloc[i]
-                    sofifa_id = row.get('sofifa_id') if 'sofifa_id' in row.index else None
-                    fifa_norm_map[norm] = (sofifa_id, row.get('short_name'))
+                    fid = row.get('sofifa_id') if 'sofifa_id' in row.index else None
+                    fifa_norm_map[norm] = (fid, row.get('short_name'))
+        else:
+            fifa_norms = []
+            fifa_lookup = None
         # Note: This is an initial pass for speed. Run a full pass later if you want higher coverage.
 
     # Build token index for the subset of FIFA names relevant to SB names (quick fuzzy)
-    # Use the norms list we computed above if available
-    fifa_norms = globals().get('norms', [])
-    fifa_shortnames = []
-    fifa_sofifa = []
-    fifa_lookup = None
-    if 'fifa_df_full' in globals():
-        fifa_shortnames = list(fifa_df_full.get('short_name', '').fillna('').astype(str).tolist())
-        fifa_sofifa = list(fifa_df_full.get('sofifa_id', [None] * len(fifa_shortnames)))
-        fifa_lookup = fifa_df_full[['sofifa_id', 'short_name']].copy() if 'sofifa_id' in fifa_df_full.columns else fifa_df_full[['short_name']].copy()
-    elif 'chunk' in globals() and chunk is not None:
-        fifa_shortnames = list(chunk.get('short_name', '').fillna('').astype(str).tolist())
-        fifa_sofifa = list(chunk.get('sofifa_id', [None] * len(fifa_shortnames)))
-        fifa_lookup = chunk[['sofifa_id', 'short_name']].copy() if 'sofifa_id' in chunk.columns else chunk[['short_name']].copy()
+    # Ensure we have fifa_norms and a fifa_lookup available from the previous load (parquet or chunk)
+    fifa_norms = locals().get('fifa_norms', [])
+    fifa_lookup = locals().get('fifa_lookup', None)
 
     # tokens present in SB names
     sb_tokens = set()
@@ -220,6 +232,20 @@ def main():
             if t in sb_tokens:
                 token_index.setdefault(t, []).append(idx)
 
+    # Diagnostics
+    print('--- Mapping diagnostics ---')
+    print(f'Unique SB players: {len(unique_players)}')
+    print(f'FIFA norms loaded: {len(fifa_norms)}')
+    if fifa_lookup is not None:
+        try:
+            print(f'FIFA lookup rows: {len(fifa_lookup)}')
+        except Exception:
+            pass
+    print(f'Token index size: {len(token_index)}')
+    if len(token_index) > 0:
+        sample = list(token_index.items())[:10]
+        print('Sample token index entries (token -> #candidates):', [(t, len(idxs)) for t, idxs in sample])
+
     review_rows = []
     accepted = []
     for _, r in unique_players.iterrows():
@@ -230,45 +256,70 @@ def main():
         status = 'unmatched'
         if score >= AUTO_ACCEPT:
             status = 'accepted'
-            accepted.append({'player_id_sb': sbid, 'player_name_sb': sbname, 'sofifa_id': sofifa, 'score': score, 'method': method})
+            accepted.append({'player_id_sb': sbid, 'player_name_sb': sbname, 'fifa_id': sofifa, 'score': score, 'method': method})
         else:
             # quick fuzzy: only when exact miss
             n = normalize_name(sbname)
             tokens = [t for t in n.split() if len(t) > 1]
-            candidate_idxs = set()
+            # Narrow candidates by token intersection when possible, otherwise union with caps
+            token_sets = []
             for t in tokens:
-                candidate_idxs.update(token_index.get(t, []))
-            # limit search size
-            if candidate_idxs and len(candidate_idxs) <= 1000:
-                choices = [fifa_norms[i] for i in candidate_idxs]
+                idxs = token_index.get(t, [])
+                # skip tokens that are too common (e.g., 'de', 'da')
+                if len(idxs) > 5000:
+                    continue
+                token_sets.append(set(idxs))
+
+            candidate_idxs = set()
+            if token_sets:
+                if len(token_sets) > 1:
+                    candidate_idxs = set.intersection(*token_sets)
+                else:
+                    candidate_idxs = token_sets[0]
+            else:
+                # fallback: union tokens but accumulate from least-common tokens to cap size
+                sorted_tokens = sorted(tokens, key=lambda x: len(token_index.get(x, [])))
+                for t in sorted_tokens:
+                    candidate_idxs.update(token_index.get(t, []))
+                    if len(candidate_idxs) > 2000:
+                        break
+
+            # cap total search size
+            if candidate_idxs:
+                if len(candidate_idxs) > 2000:
+                    candidate_list = list(candidate_idxs)[:2000]
+                else:
+                    candidate_list = list(candidate_idxs)
+
+                choices = [fifa_norms[i] for i in candidate_list]
                 res = process.extractOne(n, choices, scorer=fuzz.token_sort_ratio)
                 if res:
                     best_match, sscore, local_idx = res
-                    # convert local_idx in choices -> global idx
-                    # find global index by searching first occurrence
-                    # fallback to scanning candidate_idxs
-                    global_idx = None
-                    for i in candidate_idxs:
-                        if fifa_norms[i] == best_match:
-                            global_idx = i
-                            break
-                    if global_idx is not None:
+                    # convert local_idx relative to choices -> global idx
+                    global_idx = candidate_list[local_idx] if isinstance(local_idx, int) and 0 <= local_idx < len(candidate_list) else None
+                    if global_idx is None:
+                        # fallback to scanning candidate_idxs
+                        for i in candidate_idxs:
+                            if fifa_norms[i] == best_match:
+                                global_idx = i
+                                break
+                    if global_idx is not None and fifa_lookup is not None:
                         row = fifa_lookup.iloc[global_idx]
-                        sofifa2 = row.get('sofifa_id') if 'sofifa_id' in row.index else None
+                        fifa2 = row.get('fifa_id') if 'fifa_id' in row.index else None
                         cand_name2 = row.get('short_name')
                         if sscore >= 85:
                             status = 'accepted_fuzzy'
-                            accepted.append({'player_id_sb': sbid, 'player_name_sb': sbname, 'sofifa_id': sofifa2, 'score': int(sscore), 'method': 'fuzzy'})
+                            accepted.append({'player_id_sb': sbid, 'player_name_sb': sbname, 'fifa_id': fifa2, 'score': int(sscore), 'method': 'fuzzy'})
                         elif sscore >= 75:
                             status = 'review'
-                            sofifa = sofifa2
+                            sofifa = fifa2
                             cand_name = cand_name2
                             score = int(sscore)
             # end fuzzy
         review_rows.append({
             'player_id_sb': sbid,
             'player_name_sb': sbname,
-            'candidate_sofifa_id': sofifa,
+            'candidate_fifa_id': sofifa,
             'candidate_name': cand_name,
             'score': score,
             'method': method,
