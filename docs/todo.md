@@ -4,6 +4,24 @@ Short: Prioritized, actionable todo list and milestones for the project (LightGB
 
 ---
 
+## Current status & key findings ✅
+- Data ingestion (StatsBomb + FIFA) completed and cached as Parquet in `data/cache/`.
+- Player mapping pipeline implemented with multiple passes:
+  - `scripts/match_players.py` (exact normalize + quick fuzzy)
+  - `scripts/match_players_fullfuzzy.py` (exhaustive fuzzy pass)
+  - `scripts/match_players_position_pass.py` (position-aware promotions)
+  - `scripts/match_players_fullfuzzy.py` and `scripts/match_players_position_pass.py` produced `data/mappings/player_map.csv` and updated `player_map_review.csv`.
+- Current mapping metrics (latest run):
+  - **Unique StatsBomb players:** 4,472
+  - **Accepted mappings (auto/promoted):** **3,459** (`data/mappings/player_map.csv`)
+  - **Review/ambiguous rows:** 4,474 (`data/mappings/player_map_review.csv`)
+  - **Player appearances matched:** 47,873 / 53,761 (**89.0%**)
+  - **Matches where BOTH teams' starting XIs are fully mapped:** **467** / 2,445 (**19.1%**)
+
+> Notes: Full fuzzy and position-aware passes increased mapping coverage significantly (from ≈0.37% fully-matched matches → 19.1%); however the project target of ≥80% fully-matched matches requires additional passes (country/nationality alignment, team-context heuristics, or a small classifier).
+
+---
+
 ## Milestones (priority order)
 
 1. Data ingestion & basic mapping ✅
