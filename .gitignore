@@ -2,5 +2,7 @@
 # Kaggle credentials
 .kaggle/
 
-# Dataset folder (ignored because it's large)
+# Dataset folders (ignored because they're large)
 data/fifa23/
+# StatsBomb open-data
+data/statsbom-opendata/
