@@ -197,12 +197,15 @@ def main():
     fifa_norms = globals().get('norms', [])
     fifa_shortnames = []
     fifa_sofifa = []
+    fifa_lookup = None
     if 'fifa_df_full' in globals():
         fifa_shortnames = list(fifa_df_full.get('short_name', '').fillna('').astype(str).tolist())
         fifa_sofifa = list(fifa_df_full.get('sofifa_id', [None] * len(fifa_shortnames)))
+        fifa_lookup = fifa_df_full[['sofifa_id', 'short_name']].copy() if 'sofifa_id' in fifa_df_full.columns else fifa_df_full[['short_name']].copy()
     elif 'chunk' in globals() and chunk is not None:
         fifa_shortnames = list(chunk.get('short_name', '').fillna('').astype(str).tolist())
         fifa_sofifa = list(chunk.get('sofifa_id', [None] * len(fifa_shortnames)))
+        fifa_lookup = chunk[['sofifa_id', 'short_name']].copy() if 'sofifa_id' in chunk.columns else chunk[['short_name']].copy()
 
     # tokens present in SB names
     sb_tokens = set()
