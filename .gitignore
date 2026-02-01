@@ -1,1 +1,6 @@
 .env
+# Kaggle credentials
+.kaggle/
+
+# Dataset folder (ignored because it's large)
+data/fifa23/
